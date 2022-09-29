@@ -412,7 +412,8 @@ end"
 
 ;; html (ignored)
 (defmethod apply-token "html_inline" [doc _] doc)
-(defmethod apply-token "html_block" [doc _] doc)
+(defmethod apply-token "html_block" [doc {inlined-html :content}] (push-node doc {:type :text :text inlined-html}))
+
 ;; endregion
 
 ;; region data builder api
