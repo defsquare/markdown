@@ -1,12 +1,13 @@
 (ns nextjournal.markdown.transform
   "transform markdown data as returned by `nextjournal.markdown/parse` into other formats, currently:
-     * hiccup"
-  (:require [lambdaisland.uri.normalize :as uri.normalize]))
+     * hiccup")
 
 ;; helpers
 (defn guard [pred val] (when (pred val) val))
-(defn ->text [{:as _node :keys [text content]}] (or text (apply str (map ->text content))))
-(def ->id uri.normalize/normalize-fragment)
+(defn ->text [{:as _node :keys [type text content]}]
+  (or (when (= :softbreak type) " ")
+      text
+      (apply str (map ->text content))))
 
 (defn hydrate-toc
   "Scans doc contents and replaces toc node placeholder with the toc node accumulated during parse."
@@ -27,16 +28,16 @@
   [mkup ctx {:as node :keys [text content]}]
   (cond ;; formula nodes are leaves: have text and no contents
     text (conj mkup text)
-    (seq content) (into mkup
-                        (keep (partial ->hiccup (assoc ctx ::parent node)))
-                        content)))
+    content (into mkup
+                  (keep (partial ->hiccup (assoc ctx ::parent node)))
+                  content)))
 
-(defn toc->hiccup [{:as ctx ::keys [parent]} {:as node :keys [content children]}]
-  (let [toc-item (cond-> [:div]
+(defn toc->hiccup [{:as ctx ::keys [parent]} {:as node :keys [attrs content children]}]
+  (let [id (:id attrs)
+        toc-item (cond-> [:div]
                    (seq content)
-                   (conj (let [id (-> node ->text ->id)]
-                           [:a {:href (str "#" id) #?@(:cljs [:on-click #(when-some [el (.getElementById js/document id)] (.preventDefault %) (.scrollIntoViewIfNeeded el))])}
-                            (-> node heading-markup (into-markup ctx node))]))
+                   (conj [:a {:href (str "#" id) #?@(:cljs [:on-click #(when-some [el (.getElementById js/document id)] (.preventDefault %) (.scrollIntoViewIfNeeded el))])}
+                          (-> node heading-markup (into-markup ctx node))])
                    (seq children)
                    (conj (into [:ul] (map (partial ->hiccup (assoc ctx ::parent node))) children)))]
     (cond->> toc-item
@@ -60,12 +61,12 @@ a paragraph
       (->> (->hiccup (assoc default-hiccup-renderers
                             :toc (fn [ctx {:as node :keys [content children heading-level]}]
                                    (cond-> [:div]
-                                     (seq content) (conj [:span.title {:data-level heading-level} (-> node ->text ->id)])
+                                     (seq content) (conj [:span.title {:data-level heading-level} (:id node)])
                                      (seq children) (conj (into [:ul] (map (partial ->hiccup ctx)) children)))))))))
 
 (def default-hiccup-renderers
   {:doc (partial into-markup [:div])
-   :heading (fn [ctx node] (-> (heading-markup node) (conj {:id (-> node ->text ->id)}) (into-markup ctx node)))
+   :heading (fn [ctx {:as node :keys [attrs]}] (-> (heading-markup node) (conj attrs) (into-markup ctx node)))
    :paragraph (partial into-markup [:p])
    :plain (partial into-markup [:<>])
    :text (fn [_ {:keys [text]}] text)
@@ -73,18 +74,19 @@ a paragraph
    :blockquote (partial into-markup [:blockquote])
    :ruler (constantly [:hr])
 
-   ;; images
-   :image (fn [{:as ctx ::keys [parent]} {:as node :keys [attrs]}]
-            (if (= :paragraph (:type parent))
-              [:img.inline attrs]
-              [:figure.image [:img attrs] (into-markup [:figcaption] ctx node)]))
+   ;; by default we always wrap images in paragraph to restore compliance with commonmark
+   :image (fn [{:as _ctx ::keys [parent]} {:as node :keys [attrs]}]
+            (let [img-markup [:img (assoc attrs :alt (->text node))]]
+              (if (= :doc (:type parent))
+                [:p img-markup]
+                img-markup)))
 
    ;; code
    :code (partial into-markup [:pre.viewer-code.not-prose])
 
-   ;; softbreaks
-   ;; :softbreak (constantly [:br]) (treat as space)
+   ;; breaks
    :softbreak (constantly " ")
+   :hardbreak (constantly [:br])
 
    ;; formulas
    :formula (partial into-markup [:span.formula])
@@ -104,15 +106,25 @@ a paragraph
    :table-head (partial into-markup [:thead])
    :table-body (partial into-markup [:tbody])
    :table-row (partial into-markup [:tr])
-   :table-header (fn [ctx {:as node :keys [attrs]}] (into-markup [:th {:style (table-alignment attrs)}] ctx node))
-   :table-data (fn [ctx {:as node :keys [attrs]}] (into-markup [:td {:style (table-alignment attrs)}] ctx node))
+   :table-header (fn [ctx {:as node :keys [attrs]}]
+                   (into-markup (let [ta (table-alignment attrs)] (cond-> [:th] ta (conj {:style ta})))
+                                ctx node))
+   :table-data (fn [ctx {:as node :keys [attrs]}]
+                 (into-markup (let [ta (table-alignment attrs)] (cond-> [:td] ta (conj {:style ta})))
+                              ctx node))
 
-   ;; sidenodes
-   :sidenote-ref (partial into-markup [:sup.sidenote-ref])
-   :sidenote (fn [ctx {:as node :keys [attrs]}]
-               (into-markup [:span.sidenote [:sup {:style {:margin-right "3px"}} (-> attrs :ref inc)]]
-                            ctx
-                            node))
+   ;; footnotes & sidenodes
+   :sidenote-container (partial into-markup [:div.sidenote-container])
+   :sidenote-column (partial into-markup [:div.sidenote-column])
+   :sidenote-ref (fn [_ {:keys [ref label]}] [:sup.sidenote-ref {:data-label label} (str (inc ref))])
+   :sidenote (fn [ctx {:as node :keys [ref]}]
+               (into-markup [:span.sidenote [:sup {:style {:margin-right "3px"}} (str (inc ref))]] ctx node))
+
+   :footnote-ref (fn [_ {:keys [ref label]}] [:sup.sidenote-ref {:data-label label} (str (inc ref))])
+   ;; NOTE: there's no default footnote placement (see n.markdown.parser/insert-sidenotes)
+   :footnote (fn [ctx {:as node :keys [ref label]}]
+               (into-markup [:div.footnote [:span.footnote-label {:data-ref ref} label]] ctx node))
+
    ;; TOC
    :toc toc->hiccup
 

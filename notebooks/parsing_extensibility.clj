@@ -1,42 +1,48 @@
 ;; # 🏗 Extending Markdown Parsing
-
-^{:nextjournal.clerk/visibility {:code :hide} :nextjournal.clerk/toc :collapsed}
-(ns ^:nextjournal.clerk/no-cache parsing-extensibility
+(ns parsing-extensibility
+  {:nextjournal.clerk/toc :collapsed
+   :nextjournal.clerk/no-cache true}
   (:require [nextjournal.clerk :as clerk]
-            [nextjournal.clerk.viewer :as clerk.viewer]
             [nextjournal.markdown :as md]
             [nextjournal.markdown.parser :as md.parser]
             [edamame.core :as edamame]
             [clojure.string :as str]))
 
 ^{:nextjournal.clerk/visibility {:code :hide :result :hide}}
-(def show-text {:transform-fn (fn [{{::clerk/keys [var-from-def]} :nextjournal/value}] (clerk/html [:pre @var-from-def]))})
+(def show-text
+  {:var-from-def? true
+   :transform-fn (fn [{{::clerk/keys [var-from-def]} :nextjournal/value}] (clerk/html [:pre @var-from-def]))})
 
-;; With recent additions to our `nextjournal.markdown.parser` we added a tiny parsing layer on top of the tokenization provided by `markdown-it` ([n.markdown/tokenize](https://github.com/nextjournal/markdown/blob/ae2a2f0b6d7bdc6231f5d088ee559178b55c97f4/src/nextjournal/markdown.clj#L50-L52)).
+;; With recent additions to our `nextjournal.markdown.parser` we're allowing for a customizable parsing layer on top of the tokenization provided by `markdown-it` ([n.markdown/tokenize](https://github.com/nextjournal/markdown/blob/ae2a2f0b6d7bdc6231f5d088ee559178b55c97f4/src/nextjournal/markdown.clj#L50-L52)).
 ;; We're acting on the text (leaf) tokens, splitting each of those into a collection of [nodes](https://github.com/nextjournal/markdown/blob/ff68536eb15814fe81db7a6d6f11f049895a4282/src/nextjournal/markdown/parser.cljc#L5).  We'll explain how that works by means of three examples.
 ;;
 ;; ## Regex-based tokenization
 ;;
-;; A `Tokenizer` requires keys `:doc-handler` and `:tokenizer-fn` but for convenience we might provide a map
-;; with a `:regex` and a `:handler` (function of `Match` to a `Node`) and `md.parser/normalize-tokenizer` will fill in the missing keys
+;; A `Tokenizer` is a map with keys `:doc-handler` and `:tokenizer-fn`. For convenience, the function `md.parser/normalize-tokenizer` will fill in the missing keys
+;; starting from a map with a `:regex` and a `:handler`:
 
-(def regex-tokenizer
+(def internal-link-tokenizer
   (md.parser/normalize-tokenizer
    {:regex #"\[\[([^\]]+)\]\]"
     :handler (fn [match] {:type :internal-link
                           :text (match 1)})}))
 
-((:tokenizer-fn regex-tokenizer) "some [[set]] of [[wiki]] link")
+((:tokenizer-fn internal-link-tokenizer) "some [[set]] of [[wiki]] link")
 
-(md.parser/tokenize-text-node regex-tokenizer {:text "some [[set]] of [[wiki]] link"})
-;; and the whole story becomes
-(md/parse "some [[set]] of [[wiki]] link")
+(md.parser/tokenize-text-node internal-link-tokenizer {} {:text "some [[set]] of [[wiki]] link"})
+
+
+;; In order to opt-in of the extra tokenization above, we need to configure the document context as follows:
+(md/parse (update md.parser/empty-doc :text-tokenizers conj internal-link-tokenizer)
+          "some [[set]] of [[wiki]] link")
+
+;; We provide an `internal-link-tokenizer` as well as a `hashtag-tokenizer` as part of the `nextjournal.markdown.parser` namespace. By default, these are not used during parsing and need to be opted-in for like explained above.
 
 ;; ## Read-based tokenization
 ;;
 ;; Somewhat inspired by the Racket text processor [Pollen](https://docs.racket-lang.org/pollen/pollen-command-syntax.html) we'd like to parse a `text` like this
 
-^{::clerk/visibility :hide ::clerk/viewer show-text}
+^{::clerk/visibility {:code :hide} ::clerk/viewer show-text}
 (def text "At some point in text a losange
 will signal ◊(foo \"one\" [[vector]]) we'll want to write
 code and ◊not text. Moreover it has not to conflict with
@@ -45,7 +51,7 @@ existing [[links]] or #tags")
 ;; _losange_ as in French it does sound much better 🇫🇷!
 ;;
 ;; How to proceed? We might take a hint from `re-seq`.
-^{::clerk/visibility :hide}
+^{::clerk/visibility {:code :hide}}
 (clerk/html
  [:div.viewer-code
   (clerk/code
@@ -75,7 +81,7 @@ existing [[links]] or #tags")
     :handler (fn [clj-data] {:type :losange
                              :data clj-data})}))
 
-(md.parser/tokenize-text-node losange-tokenizer {:text text})
+(md.parser/tokenize-text-node losange-tokenizer {} {:text text})
 
 ;; putting it all together and giving losange topmost priority wrt other tokens
 (md.parser/parse (update md.parser/empty-doc :text-tokenizers #(cons losange-tokenizer %))
@@ -85,9 +91,9 @@ existing [[links]] or #tags")
 ;;
 ;; Using tokenizers with document handlers we can let parsed tokens act upon the whole document tree. Consider
 ;; the following textual example (**TODO** _rewrite parsing with a zipper state_):
-^{::clerk/viewer show-text ::clerk/visibility :hide}
+^{::clerk/viewer show-text}
 (def text-with-meta
-  "# Example ◊(add-meta {:id \"some-id\" :class \"semantc\"})
+  "# Example ◊(add-meta {:attrs {:id \"some-id\"} :class \"semantc\"})
 In this example we're using the losange tokenizer to modify the
 document AST in conjunction with the following functions:
 * `add-meta`: looks up the parent node, merges a map in it
@@ -112,15 +118,17 @@ and adds a flag to its text.
 
 (def data
   (md.parser/parse
-   (update md.parser/empty-doc :text-tokenizers conj
-           (assoc losange-tokenizer
-                  :doc-handler (fn [doc {:keys [match]}]
-                                 (apply (eval (first match)) doc (rest match)))))
+   (-> md.parser/empty-doc
+       (dissoc :text->id+emoji-fn)
+       (update :text-tokenizers conj
+               (assoc losange-tokenizer
+                      :doc-handler (fn [doc {:keys [match]}]
+                                     (apply (eval (first match)) doc (rest match))))))
    (md/tokenize text-with-meta)))
 
 (clerk/md data)
 
-^{::clerk/visibility :hide ::clerk/viewer :hide-result}
+^{::clerk/visibility {:code :hide :result :hide}}
 (comment
   (clerk/serve! {:port 8888})
   ;;    Tokenizer :: {:tokenizer-fn :: TokenizerFn,

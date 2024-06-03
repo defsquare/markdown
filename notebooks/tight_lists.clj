@@ -1,6 +1,7 @@
 ;; # Tight Lists
-(ns ^:nextjournal.clerk/no-cache tight-lists
-  {:nextjournal.clerk/toc :collapsed}
+(ns tight-lists
+  {:nextjournal.clerk/toc :collapsed
+   :nextjournal.clerk/no-cache true}
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.java.shell :as shell]
@@ -123,8 +124,26 @@
 
 ;; in terms of Clerk support, that amounts to introduce a new viewer, the natural candidate for rendering plain nodes is
 ;; the empty container `:<>`
-(clerk/add-viewers! [{:name ::md/plain
-                      :transform-fn (v/into-markup [:<>])}])
+(clerk/add-viewers! [(update v/markdown-viewer
+                             :transform-fn (fn [tx-fn]
+                                             (fn [wv] (-> wv
+                                                          tx-fn
+                                                          (update :nextjournal/viewers
+                                                                  v/add-viewers [{:name ::md/plain
+                                                                                  :transform-fn (v/into-markup [:<>])}])))))])
+
+;; ## Rendering
+;; ### Tight Lists
+;; * one
+;; * two
+;; * three
+;;
+;; ### Loose Lists
+;; * one
+;;
+;;   one-two
+;; * two
+;; * three
 
 ^{::clerk/visibility {:code :hide :result :hide}}
 (comment

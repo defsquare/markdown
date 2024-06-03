@@ -20,7 +20,9 @@
 ;; - `:attrs` attributes as passed by markdown-it tokens (e.g `{:style "some style info"}`)
 (ns nextjournal.markdown.parser
   (:require [clojure.string :as str]
+            [clojure.zip :as z]
             [nextjournal.markdown.transform :as md.transform]
+            [nextjournal.markdown.parser.emoji :as emoji]
             #?@(:cljs [[applied-science.js-interop :as j]
                        [cljs.reader :as reader]])))
 
@@ -43,7 +45,34 @@
 ;; region node operations
 ;; helpers
 (defn inc-last [path] (update path (dec (count path)) inc))
-(defn hlevel [{:as _token hn :tag}] (when (string? hn) (some-> (re-matches #"h([\d])" hn) second #?(:clj read-string :cljs reader/read-string))))
+(defn hlevel [{:as _token hn :tag}] (when (string? hn) (some-> (re-matches #"h([\d])" hn) second #?(:clj Integer/parseInt :cljs js/parseInt))))
+
+(defn split-by-emoji [s]
+  (let [[match start end] (first (re-idx-seq emoji/regex s))]
+    (if match
+      [(subs s start end) (str/trim (subs s end))]
+      [nil s])))
+
+#_(split-by-emoji " Stop")
+#_(split-by-emoji "🤚🏽 Stop")
+#_(split-by-emoji "🤚🏽🤚 Stop")
+#_(split-by-emoji "🤚🏽Stop")
+#_(split-by-emoji "🤚🏽   Stop")
+#_(split-by-emoji "😀 Stop")
+#_(split-by-emoji "⚛️ Stop")
+#_(split-by-emoji "⚛ Stop")
+#_(split-by-emoji "⬇ Stop")
+#_(split-by-emoji "Should not 🙁️ Split")
+
+(defn text->id+emoji [text]
+  (when (string? text)
+    (let [[emoji text'] (split-by-emoji (str/trim text))]
+      (cond-> {:id (apply str (map (comp str/lower-case (fn [c] (case c (\space \_) \- c))) text'))}
+        emoji (assoc :emoji emoji)))))
+
+#_(text->id+emoji "Hello There")
+#_(text->id+emoji "Hello_There")
+#_(text->id+emoji "👩‍🔬 Quantum Physics")
 
 ;; `parse-fence-info` ingests nextjournal, GFM, Pandoc and RMarkdown fenced code block info (any text following the leading 3 backticks) and returns a map
 ;;
@@ -100,10 +129,9 @@
 
 ;; leaf nodes
 (defn text-node [text] {:type :text :text text})
-(defn tag-node [text] {:type :hashtag :text text})
 (defn formula [text] {:type :formula :text text})
 (defn block-formula [text] {:type :block-formula :text text})
-(defn sidenote-ref [ref] {:type :sidenote-ref :content [(text-node (str (inc ref)))]})
+(defn footnote-ref [ref label] (cond-> {:type :footnote-ref :ref ref} label (assoc :label label)))
 
 ;; node constructors
 (defn node
@@ -115,11 +143,17 @@
 (defn empty-text-node? [{text :text t :type}] (and (= :text t) (empty? text)))
 
 (defn push-node [{:as doc ::keys [path]} node]
-  (cond-> doc
-    (not (empty-text-node? node)) ;; ⬅ mdit produces empty text tokens at mark boundaries, see edge cases below
-    (-> #_doc
-        (update ::path inc-last)
-        (update-in (pop path) conj node))))
+  (try
+    (cond-> doc
+      ;; ⬇ mdit produces empty text tokens at mark boundaries, see edge cases below
+      (not (empty-text-node? node))
+      (-> #_doc
+       (update ::path inc-last)
+       (update-in (pop path) conj node)))
+    (catch #?(:clj Exception :cljs js/Error) e
+      (throw (ex-info (str "nextjournal.markdown cannot add node: " node " at path: " path)
+                      {:doc doc :node node} e)))))
+
 (def push-nodes (partial reduce push-node))
 
 (defn open-node
@@ -129,10 +163,45 @@
    (-> doc
        (push-node (node type [] attrs top-level))
        (update ::path into [:content -1]))))
+
 ;; after closing a node, document ::path will point at it
 (def ppop (comp pop pop))
 (defn close-node [doc] (update doc ::path ppop))
 (defn update-current [{:as doc path ::path} fn & args] (apply update-in doc path fn args))
+
+(defn current-parent-node
+  "Given an open parsing context `doc`, returns the parent of the node which was last parsed into the document."
+  [{:as doc ::keys [path]}]
+  (assert path "A path is needed in document context to retrieve the current node: `current-parent-node` cannot be called after `parse`.")
+  (get-in doc (ppop path)))
+
+(defn current-ancestor-nodes
+  "Given an open parsing context `doc`, returns the list of ancestors of the node last parsed into the document, up to but
+   not including the top document."
+  [{:as doc ::keys [path]}]
+  (assert path "A path is needed in document context to retrieve the current node: `current-ancestor-nodes` cannot be called after `parse`.")
+  (loop [p (ppop path) ancestors []]
+    (if (seq p)
+      (recur (ppop p) (conj ancestors (get-in doc p)))
+      ancestors)))
+
+;; TODO: consider rewriting parse in terms of this zipper
+(defn ->zip [doc]
+  (z/zipper (every-pred map? :type) :content
+            (fn [node cs] (assoc node :content (vec cs)))
+            doc))
+
+(defn assign-node-id+emoji [{:as doc ::keys [id->index path] :keys [text->id+emoji-fn]}]
+  (let [{:keys [id emoji]} (when (ifn? text->id+emoji-fn) (-> doc (get-in path) text->id+emoji-fn))
+        id-count (when id (get id->index id))]
+    (cond-> doc
+      id
+      (update-in [::id->index id] (fnil inc 0))
+      (or id emoji)
+      (update-in path (fn [node]
+                        (cond-> node
+                          id (assoc-in [:attrs :id] (cond-> id id-count (str "-" (inc id-count))))
+                          emoji (assoc :emoji emoji)))))))
 
 (comment                                                    ;; path after call
   (-> empty-doc                                             ;; [:content -1]
@@ -239,8 +308,14 @@ end"
 (defmethod apply-token "heading_open" [doc token] (open-node doc :heading {} {:heading-level (hlevel token)}))
 (defmethod apply-token "heading_close" [doc {doc-level :level}]
   (let [{:as doc ::keys [path]} (close-node doc)
-        heading (-> doc (get-in path) (assoc :path path))]
-    (cond-> doc (zero? doc-level) (-> (add-to-toc heading) (set-title-when-missing heading)))))
+        doc' (assign-node-id+emoji doc)
+        heading (-> doc' (get-in path) (assoc :path path))]
+    (cond-> doc'
+      ;; We're only considering top-level headings (e.g. not those contained inside quotes or lists)
+      (zero? doc-level)
+      (-> (add-to-toc heading)
+          (set-title-when-missing heading)))))
+
 ;; for building the TOC we just care about headings at document top level (not e.g. nested under lists) ⬆
 
 (defmethod apply-token "paragraph_open" [doc {:as _token :keys [hidden]}] (open-node doc (if hidden :plain :paragraph)))
@@ -279,12 +354,101 @@ end"
       close-node))
 
 ;; footnotes
-(defmethod apply-token "sidenote_ref" [doc token] (push-node doc (sidenote-ref (get-in* token [:meta :id]))))
-(defmethod apply-token "sidenote_anchor" [doc token] doc)
-(defmethod apply-token "sidenote_open" [doc token] (-> doc (assoc :sidenotes? true) (open-node :sidenote {:ref (get-in* token [:meta :id])})))
-(defmethod apply-token "sidenote_close" [doc token] (close-node doc))
-(defmethod apply-token "sidenote_block_open" [doc token] (-> doc (assoc :sidenotes? true) (open-node :sidenote {:ref (get-in* token [:meta :id])})))
-(defmethod apply-token "sidenote_block_close" [doc token] (close-node doc))
+(defmethod apply-token "footnote_ref" [{:as doc :keys [footnotes]} token]
+  (push-node doc (footnote-ref (+ (count footnotes) (get-in* token [:meta :id]))
+                               (get-in* token [:meta :label]))))
+
+(defmethod apply-token "footnote_anchor" [doc token] doc)
+
+(defmethod apply-token "footnote_open" [{:as doc ::keys [footnote-offset]} token]
+  ;; consider an offset in case we're parsing multiple inputs into the same context
+  (let [ref (+ (get-in* token [:meta :id]) footnote-offset)
+        label (get-in* token [:meta :label])]
+    (open-node doc :footnote nil (cond-> {:ref ref} label (assoc :label label)))))
+
+(defmethod apply-token "footnote_close" [doc token] (close-node doc))
+
+(defmethod apply-token "footnote_block_open" [{:as doc :keys [footnotes] ::keys [path]} _token]
+  ;; store footnotes at a top level `:footnote` key
+  (let [footnote-offset (count footnotes)]
+    (-> doc
+        (assoc ::path [:footnotes (dec footnote-offset)]
+               ::footnote-offset footnote-offset
+               ::path-to-restore path))))
+
+(defmethod apply-token "footnote_block_close"
+  ;; restores path for addding new tokens
+  [{:as doc ::keys [path-to-restore]} _token]
+  (-> doc
+      (assoc ::path path-to-restore)
+      (dissoc ::path-to-restore ::footnote-offset)))
+
+(defn footnote->sidenote [{:keys [ref label content]}]
+  ;; this assumes the footnote container is a paragraph, won't work for lists
+  (node :sidenote (-> content first :content) nil (cond-> {:ref ref} label (assoc :label label))))
+
+(defn node-with-sidenote-refs [p-node]
+  (loop [l (->zip p-node) refs []]
+    (if (z/end? l)
+      (when (seq refs)
+        {:node (z/root l) :refs refs})
+      (let [{:keys [type ref]} (z/node l)]
+        (if (= :footnote-ref type)
+          (recur (z/next (z/edit l assoc :type :sidenote-ref)) (conj refs ref))
+          (recur (z/next l) refs))))))
+
+(defn insert-sidenote-containers
+  "Handles footnotes as sidenotes.
+
+   Takes and returns a parsed document. When the document has footnotes, wraps every top-level block which contains footnote references
+   with a `:footnote-container` node, into each of such nodes, adds a `:sidenote-column` node containing a `:sidenote` node for each found ref.
+   Renames type `:footnote-ref` to `:sidenote-ref."
+  [{:as doc ::keys [path] :keys [footnotes]}]
+  (if-not (seq footnotes)
+    doc
+    (let [root (->zip doc)]
+      (loop [loc (z/down root) parent root]
+        (cond
+          (nil? loc)
+          (-> parent z/node (assoc :sidenotes? true))
+          (contains? #{:plain :paragraph :blockquote :numbered-list :bullet-list :todo-list :heading :table}
+                     (:type (z/node loc)))
+          (if-some [{:keys [node refs]} (node-with-sidenote-refs (z/node loc))]
+            (let [new-loc (-> loc (z/replace {:type :sidenote-container :content []})
+                              (z/append-child node)
+                              (z/append-child {:type :sidenote-column
+                                               :content (mapv #(footnote->sidenote (get footnotes %)) refs)}))]
+              (recur (z/right new-loc) (z/up new-loc)))
+            (recur (z/right loc) parent))
+          :else
+          (recur (z/right loc) parent))))))
+
+(comment
+  (-> "_hello_ what and foo[^note1] and^[some other note].
+
+And what.
+
+[^note1]: the _what_
+
+* and new text[^endnote] at the end.
+* the
+  * hell^[that warm place]
+
+[^endnote]: conclusion.
+"
+      nextjournal.markdown/tokenize
+      parse
+      #_ flatten-tokens
+      insert-sidenote-containers)
+
+  (-> empty-doc
+      (update :text-tokenizers (partial map normalize-tokenizer))
+      (apply-tokens (nextjournal.markdown/tokenize "what^[the heck]"))
+      insert-sidenote-columns
+      (apply-tokens (nextjournal.markdown/tokenize "# Hello"))
+      insert-sidenote-columns
+      (apply-tokens (nextjournal.markdown/tokenize "is^[this thing]"))
+      insert-sidenote-columns))
 
 ;; tables
 ;; table data tokens might have {:style "text-align:right|left"} attrs, maybe better nested node > :attrs > :style ?
@@ -325,25 +489,40 @@ end"
 ;;    TokenizerFn :: String -> [IndexedMatch]
 ;;    DocHandler :: Doc -> {:match :: Match} -> Doc
 
-(def text-tokenizers
-  [{:regex #"(^|\B)#[\w-]+"
-    :handler (fn [match] {:type :hashtag :text (subs (match 0) 1)})}
-   {:regex #"\[\[([^\]]+)\]\]"
-    :handler (fn [match] {:type :internal-link :text (match 1)})}])
+(def hashtag-tokenizer
+  {:regex #"(^|\B)#[\w-]+"
+   :pred #(every? (complement #{:link}) (map :type (current-ancestor-nodes %)))
+   :handler (fn [match] {:type :hashtag :text (subs (match 0) 1)})})
+
+(def internal-link-tokenizer
+  {:regex #"\[\[([^\]]+)\]\]"
+   :pred #(every? (complement #{:link}) (map :type (current-ancestor-nodes %)))
+   :handler (fn [match] {:type :internal-link :text (match 1)})})
+
+(comment
+  (->> "# Hello #Fishes
+
+> what about #this
+
+_this #should be a tag_, but this [_actually #foo shouldnt_](/bar/) is not."
+       nextjournal.markdown/tokenize
+       (parse (update empty-doc :text-tokenizers conj hashtag-tokenizer))))
+
 
 (defn normalize-tokenizer
   "Normalizes a map of regex and handler into a Tokenizer"
-  [{:as tokenizer :keys [doc-handler handler regex tokenizer-fn]}]
+  [{:as tokenizer :keys [doc-handler pred handler regex tokenizer-fn]}]
   (assert (and (or doc-handler handler) (or regex tokenizer-fn)))
   (cond-> tokenizer
     (not doc-handler) (assoc :doc-handler (fn [doc {:keys [match]}] (push-node doc (handler match))))
-    (not tokenizer-fn) (assoc :tokenizer-fn (partial re-idx-seq regex))))
+    (not tokenizer-fn) (assoc :tokenizer-fn (partial re-idx-seq regex))
+    (not pred) (assoc :pred (constantly true))))
 
-(defn tokenize-text-node [{:as tkz :keys [tokenizer-fn doc-handler]} {:as node :keys [text]}]
+(defn tokenize-text-node [{:as tkz :keys [tokenizer-fn pred doc-handler]} doc {:as node :keys [text]}]
   ;; TokenizerFn -> HNode -> [HNode]
-  (assert (and (fn? tokenizer-fn) (fn? doc-handler) (string? text))
+  (assert (and (fn? tokenizer-fn) (fn? doc-handler) (fn? pred) (string? text))
           {:text text :tokenizer tkz})
-  (let [idx-seq (tokenizer-fn text)]
+  (let [idx-seq (when (pred doc) (tokenizer-fn text))]
     (if (seq idx-seq)
       (let [text-hnode (fn [s] (assoc (text-node s) :doc-handler push-node))
             {:keys [nodes remaining-text]}
@@ -368,24 +547,22 @@ end"
           doc
           (reduce (fn [nodes tokenizer]
                     (mapcat (fn [{:as node :keys [type]}]
-                              (if (= :text type) (tokenize-text-node tokenizer node) [node]))
+                              (if (= :text type) (tokenize-text-node tokenizer doc node) [node]))
                             nodes))
                   [{:type :text :text content :doc-handler push-node}]
                   text-tokenizers)))
 
 (comment
   (def mustache (normalize-tokenizer {:regex #"\{\{([^\{]+)\}\}" :handler (fn [m] {:type :eval :text (m 1)})}))
-  (tokenize-text-node mustache {:text "{{what}} the {{hellow}}"})
+  (tokenize-text-node mustache {} {:text "{{what}} the {{hellow}}"})
   (apply-token (assoc empty-doc :text-tokenizers [mustache])
                {:type "text" :content "foo [[bar]] dang #hashy taggy [[what]] #dangy foo [[great]] and {{eval}} me"})
-
-  (nextjournal.markdown/parse "foo [[bar]] dang #hashy taggy [[what]] #dangy foo [[great]]" )
 
   (parse (assoc empty-doc
                 :text-tokenizers
                 [(normalize-tokenizer {:regex #"\{\{([^\{]+)\}\}"
-                                       :doc-handler (fn [doc {[_ meta] :match}]
-                                                      (update-in doc (pop (pop (::path ddoc))) assoc :meta meta))})])
+                                       :doc-handler (fn [{:as doc ::keys [path]} {[_ meta] :match}]
+                                                      (update-in doc (ppop path) assoc :meta meta))})])
          (nextjournal.markdown/tokenize "# Title {{id=heading}}
 * one
 * two")))
@@ -394,7 +571,11 @@ end"
 (defmethod apply-token "inline" [doc {:as _token ts :children}] (apply-tokens doc ts))
 (defmethod apply-token "math_inline" [doc {text :content}] (push-node doc (formula text)))
 (defmethod apply-token "math_inline_double" [doc {text :content}] (push-node doc (formula text)))
+
+;; https://spec.commonmark.org/0.30/#softbreak
 (defmethod apply-token "softbreak" [doc _token] (push-node doc {:type :softbreak}))
+;; https://spec.commonmark.org/0.30/#hard-line-break
+(defmethod apply-token "hardbreak" [doc _token] (push-node doc {:type :hardbreak}))
 
 ;; images
 (defmethod apply-token "image" [doc {:keys [attrs children]}] (-> doc (open-node :image attrs) (apply-tokens children) close-node))
@@ -424,9 +605,14 @@ end"
 
 (def empty-doc {:type :doc
                 :content []
+                ;; Id -> Nat, to disambiguate ids for nodes with the same textual content
+                ::id->index {}
+                ;; Node -> {id : String, emoji String}, dissoc from context to opt-out of ids
+                :text->id+emoji-fn (comp text->id+emoji md.transform/->text)
                 :toc {:type :toc}
+                :footnotes []
                 ::path [:content -1] ;; private
-                :text-tokenizers text-tokenizers})
+                :text-tokenizers []})
 
 (defn parse
   "Takes a doc and a collection of markdown-it tokens, applies tokens to doc. Uses an emtpy doc in arity 1."
@@ -434,11 +620,14 @@ end"
   ([doc tokens] (-> doc
                     (update :text-tokenizers (partial map normalize-tokenizer))
                     (apply-tokens tokens)
-                    (dissoc ::path :text-tokenizers))))
+                    (dissoc ::path
+                            ::id->index
+                            :text-tokenizers
+                            :text->id+emoji-fn))))
 
 (comment
 
- (-> "# Markdown Data
+ (-> "# 🎱 Markdown Data
 
 some _emphatic_ **strong** [link](https://foo.com)
 
@@ -542,3 +731,13 @@ some final par"
     (section-at [:content 9])                         ;; ⬅ paths are stored in TOC sections
     nextjournal.markdown.transform/->hiccup))
 ;; endregion
+
+
+;; ## 🔧 Debug
+;; A view on flattened tokens to better inspect tokens
+(defn flatten-tokens [tokens]
+  (into []
+        (comp
+         (mapcat (partial tree-seq (comp seq :children) :children))
+         (map #(select-keys % [:type :content :hidden :level :info :meta])))
+        tokens))

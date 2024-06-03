@@ -7,7 +7,7 @@
 
   :init (do
           (def major 0)
-          (def minor 4)
+          (def minor 6)
           (def rev-count-offset 69) ;; previous repo offset
           (def meta-inf-file "resources/META-INF/nextjournal/markdown/meta.edn")
 
@@ -66,6 +66,12 @@
   {:doc "runs cljs tests via node"
    :depends [cljs:compile:tests]
    :task (shell "yarn node --trace-uncaught out/node-tests.js")}
+
+  link-changelog {:doc "Turns the issue references in the changelog into links"
+                  :task (do (defn tag->issue-link [s]
+                              (clojure.string/replace s (re-pattern "(?<!\\[)#([0-9]+)") "[#$1](https://github.com/nextjournal/markdown/issues/$1)"))
+                            (let [f "CHANGELOG.md"]
+                              (spit f (tag->issue-link (slurp f)))))}
 
   update-meta {:doc "Updates meta.edn with current version (based on commit count currently)."
                :task (spit (doto (fs/file meta-inf-file)

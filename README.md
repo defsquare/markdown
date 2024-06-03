@@ -1,25 +1,25 @@
 # nextjournal markdown
 
-[![Clojars Project](https://img.shields.io/clojars/v/io.github.nextjournal/markdown.svg)](https://clojars.org/io.github.nextjournal/markdown) [![Notebooks](https://img.shields.io/static/v1?logo=plex&logoColor=rgb(155,187,157)&label=clerk&message=notebooks&color=rgb(155,187,157))](https://nextjournal.github.io/markdown/#/README.md)
+[![Clojars Project](https://img.shields.io/clojars/v/io.github.nextjournal/markdown.svg)](https://clojars.org/io.github.nextjournal/markdown) [![Notebooks](https://img.shields.io/static/v1?label=clerk&message=notebooks&color=rgb(155,187,157))](https://nextjournal.github.io/markdown)
 
 A cross-platform clojure library for [Markdown](https://en.wikipedia.org/wiki/Markdown) parsing and transformation.
 
 
-🚧 _ALPHA_ status, subject to frequent change. For a richer reading experience [read this readme as a clerk notebook](https://nextjournal.github.io/markdown/#/README.md).
+🚧 _ALPHA_ status, subject to frequent change. For a richer reading experience [read this readme as a clerk notebook](https://nextjournal.github.io/markdown/README).
 
 ## Features
 
-* _Focus on data_: parsing yields an AST ([à la Pandoc](https://nextjournal.github.io/markdown/#/notebooks/pandoc.clj)) of nested data representing a structured document.
+* _Focus on data_: parsing yields an AST ([à la Pandoc](https://nextjournal.github.io/markdown/notebooks/pandoc)) of nested data representing a structured document.
 * _Cross Platform_: clojurescript native, we target the JVM using [Graal's Polyglot Library](https://www.graalvm.org/22.1/reference-manual/js/JavaInteroperability/#polyglot-context).
 * _Configurable [Hiccup](https://github.com/weavejester/hiccup) conversion_.
 
 ## Try
 
-[Try it online](https://nextjournal.github.io/markdown/#/notebooks/try.clj).
+[Try it online](https://nextjournal.github.io/markdown/notebooks/try).
 
 ## Flavor
 
-By building on top of [markdown-it](https://github.com/markdown-it/markdown-it), we adhere to [CommonMark Spec](https://spec.commonmark.org/0.30/) and also comply with extensions from [Github flavoured Markdown](https://github.github.com/gfm). Additionally, we parse $\LaTeX$ formulas (delimited by a $ for inline rendering or $$ for display mode).
+By building on top of [markdown-it](https://github.com/markdown-it/markdown-it), we adhere to [CommonMark Spec](https://spec.commonmark.org/0.30/) (with some exceptions[^images]) and also comply with extensions from [Github flavoured Markdown](https://github.github.com/gfm). Additionally, we parse $\LaTeX$ formulas (delimited by a $ for inline rendering or $$ for display mode).
 
 For more details you might have a look at [the set of plugins](https://github.com/nextjournal/markdown/blob/main/src/js/markdown.js) we're using.
 
@@ -88,19 +88,19 @@ and transform that AST into `hiccup` syntax.
      [:p [:strong "Georges Perec"] ", " [:em "La Vie mode d'emploi"] "."]
      [:hr]]
 
-We've built hiccup transformation in for convenience, but the same approach can be used to target [more formats](https://nextjournal.github.io/markdown/#/notebooks/pandoc.clj).
+We've built hiccup transformation in for convenience, but the same approach can be used to target [more formats](https://nextjournal.github.io/markdown/notebooks/pandoc).
 
 This library is one of the building blocks of [Clerk](https://github.com/nextjournal/clerk) where it is used for rendering _literate fragments_.
 
 ```clojure
-^{:nextjournal.clerk/viewer :markdown}
+^{:nextjournal.clerk/viewer 'nextjournal.clerk.viewer/markdown-viewer}
 data
 ```
 
 The transformation of markdown node types can be customised like this:
 
 ```clojure
-^{:nextjournal.clerk/viewer :html}
+^{:nextjournal.clerk/viewer 'nextjournal.clerk.viewer/html-viewer}
 (md.transform/->hiccup
  (assoc md.transform/default-hiccup-renderers
         ;; :doc specify a custom container for the whole doc
@@ -116,4 +116,7 @@ The transformation of markdown node types can be customised like this:
 
 ## Extensibility
 
-We added minimal tooling for [extending markdown expressions](https://nextjournal.github.io/markdown/#/notebooks/parsing_extensibility.clj).
+We added minimal tooling for [extending markdown expressions](https://nextjournal.github.io/markdown/notebooks/parsing_extensibility).
+
+[^images]: isolated images are not wrapped in a paragraph
+node, unless they're part of inline content. See more examples in this [notebook](https://nextjournal.github.io/markdown/notebooks/images).
