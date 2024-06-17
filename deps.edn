@@ -2,7 +2,8 @@
  :deps {applied-science/js-interop {:mvn/version "0.3.3"}
         org.clojure/data.json {:mvn/version "2.4.0"}
         io.github.clojure/tools.build {:mvn/version "0.10.3"}
-        io.github.slipset/deps-deploy {:git/sha "b4359c5d67ca002d9ed0c4b41b710d7e5a82e3bf"}
+        io.github.slipset/deps-deploy {:git/url "https://github.com/slipset/deps-deploy.git"
+                                       :git/sha "b4359c5d67ca002d9ed0c4b41b710d7e5a82e3bf"}
         org.graalvm.js/js {:mvn/version "21.3.2.1"}}
 
  :aliases
@@ -48,4 +49,6 @@
   :build
   {:ns-default build
    :deps {io.github.clojure/tools.build {:git/tag "v0.6.1" :git/sha "515b334"}
-          io.github.slipset/deps-deploy {:git/sha "b4359c5d67ca002d9ed0c4b41b710d7e5a82e3bf"}}}}}
+          io.github.slipset/deps-deploy {:git/url "https://github.com/slipset/deps-deploy.git"
+                                         :git/sha "b4359c5d67ca002d9ed0c4b41b710d7e5a82e3bf"}
+          }}}}
