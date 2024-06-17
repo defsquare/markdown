@@ -1,6 +1,8 @@
 {:paths ["src" "resources"]
  :deps {applied-science/js-interop {:mvn/version "0.3.3"}
         org.clojure/data.json {:mvn/version "2.4.0"}
+        io.github.clojure/tools.build {:mvn/version "0.10.3"}
+        io.github.slipset/deps-deploy {:git/sha "b4359c5d67ca002d9ed0c4b41b710d7e5a82e3bf"}
         org.graalvm.js/js {:mvn/version "21.3.2.1"}}
 
  :aliases

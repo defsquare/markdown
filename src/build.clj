@@ -2,13 +2,21 @@
   (:require [clojure.tools.build.api :as b]
             [clojure.java.shell :as shell]
             [clojure.string :as str]
-            [deps-deploy.deps-deploy :as dd]))
+            [deps-deploy.deps-deploy :as dd]
+            [nextjournal.markdown :as md]))
 
 (def lib 'io.github.nextjournal/markdown)
 (defn scm [version] {:url "https://github.com/nextjournal/markdown" :tag (str "v" version)})
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))
 (defn jar-file [version] (format "target/%s-%s.jar" (name lib) version))
+
+(defn compile [_]
+  (B/compile-clj {:basis basis
+                  :ns-compile '[nextjournal.markdown]
+                  :class-dir class-dir})
+  )
+;(compile)
 
 (defn clean [_] (b/delete {:path "target"}))
 
@@ -27,7 +35,6 @@
 
 (defn deploy [{:keys [version] :as opts}]
   (println "Deploying version" (jar-file version) "to Clojars.")
-  (jar opts)
-  (dd/deploy {:installer :remote
+  (jar   (dd/deploy {:installer :remote
               :artifact (jar-file version)
               :pom-file (b/pom-path {:lib lib :class-dir class-dir})}))
